@@ -23,7 +23,8 @@ from agent.prompts import (
     reflection_instructions,
     answer_instructions,
 )
-from langchain_google_genai import ChatGoogleGenerativeAI
+from agent.model_factory import create_chat_model
+from agent.search_tools import perform_web_search_with_qwen
 from agent.utils import (
     get_citations,
     get_research_topic,
@@ -33,11 +34,17 @@ from agent.utils import (
 
 load_dotenv()
 
-if os.getenv("GEMINI_API_KEY") is None:
-    raise ValueError("GEMINI_API_KEY is not set")
+# 检查至少有一个API密钥被设置
+gemini_key = os.getenv("GEMINI_API_KEY")
+dashscope_key = os.getenv("DASHSCOPE_API_KEY")
 
-# Used for Google Search API
-genai_client = Client(api_key=os.getenv("GEMINI_API_KEY"))
+if gemini_key is None and dashscope_key is None:
+    raise ValueError("至少需要设置 GEMINI_API_KEY 或 DASHSCOPE_API_KEY 中的一个")
+
+# Used for Google Search API (only initialize if Gemini key is available)
+genai_client = None
+if gemini_key:
+    genai_client = Client(api_key=gemini_key)
 
 
 # Nodes
@@ -56,18 +63,25 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
     """
     configurable = Configuration.from_runnable_config(config)
 
+    # 检查用户输入是否是简单的问候或无意义的输入
+    user_input = get_research_topic(state["messages"]).strip().lower()
+    simple_greetings = ["hi", "hello", "hey", "你好", "哈喽", "嗨", "test", "测试"]
+    
+    if user_input in simple_greetings or len(user_input) < 3:
+        # 对于简单问候，返回友好的回应查询
+        return {"query_list": [f"如何友好地回应 '{user_input}' 这样的问候"]}
+
     # check for custom initial search query count
     if state.get("initial_search_query_count") is None:
         state["initial_search_query_count"] = configurable.number_of_initial_queries
 
-    # init Gemini 2.0 Flash
-    llm = ChatGoogleGenerativeAI(
-        model=configurable.query_generator_model,
+    # init LLM based on provider
+    llm = create_chat_model(
+        model_name=configurable.query_generator_model,
+        provider=configurable.model_provider,
         temperature=1.0,
         max_retries=2,
-        api_key=os.getenv("GEMINI_API_KEY"),
     )
-    structured_llm = llm.with_structured_output(SearchQueryList)
 
     # Format the prompt
     current_date = get_current_date()
@@ -76,9 +90,73 @@ def generate_query(state: OverallState, config: RunnableConfig) -> QueryGenerati
         research_topic=get_research_topic(state["messages"]),
         number_queries=state["initial_search_query_count"],
     )
-    # Generate the search queries
-    result = structured_llm.invoke(formatted_prompt)
-    return {"query_list": result.query}
+    
+    # 根据模型提供商使用不同的方法
+    if configurable.model_provider.lower() == "gemini":
+        # Gemini支持结构化输出
+        structured_llm = llm.with_structured_output(SearchQueryList)
+        result = structured_llm.invoke(formatted_prompt)
+        
+        # 检查结果是否有效
+        if result is None:
+            raise ValueError("Gemini模型返回了空结果，请检查API密钥和模型配置")
+        
+        if not hasattr(result, 'query') or result.query is None:
+            raise ValueError("Gemini模型返回的结果格式不正确，缺少query字段")
+        
+        return {"query_list": result.query}
+    
+    elif configurable.model_provider.lower() == "qwen":
+        # 通义千问使用JSON格式提示
+        json_prompt = formatted_prompt + f"""
+
+请以JSON格式返回结果，格式如下：
+{{
+    "query": ["查询1", "查询2", "查询3"],
+    "rationale": "选择这些查询的原因"
+}}
+
+请确保返回有效的JSON格式，包含{state["initial_search_query_count"]}个搜索查询。
+"""
+        
+        response = llm.invoke(json_prompt)
+        
+        # 解析JSON响应
+        import json
+        try:
+            # 尝试从响应中提取JSON
+            content = response.content
+            # 查找JSON部分
+            start_idx = content.find('{')
+            end_idx = content.rfind('}') + 1
+            if start_idx != -1 and end_idx != 0:
+                json_str = content[start_idx:end_idx]
+                result_data = json.loads(json_str)
+                
+                if "query" in result_data and isinstance(result_data["query"], list):
+                    return {"query_list": result_data["query"]}
+                else:
+                    raise ValueError("通义千问返回的JSON格式不正确，缺少query字段")
+            else:
+                raise ValueError("无法从通义千问响应中找到JSON格式")
+                
+        except json.JSONDecodeError as e:
+            # 如果JSON解析失败，尝试简单的文本解析
+            print(f"JSON解析失败: {e}")
+            print(f"原始响应: {response.content}")
+            
+            # 生成默认查询
+            topic = get_research_topic(state["messages"])
+            default_queries = [
+                f"{topic}",
+                f"{topic} 最新信息",
+                f"{topic} 详细介绍"
+            ][:state["initial_search_query_count"]]
+            
+            return {"query_list": default_queries}
+    
+    else:
+        raise ValueError(f"不支持的模型提供商: {configurable.model_provider}")
 
 
 def continue_to_web_research(state: QueryGenerationState):
@@ -93,9 +171,9 @@ def continue_to_web_research(state: QueryGenerationState):
 
 
 def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
-    """LangGraph node that performs web research using the native Google Search API tool.
+    """LangGraph node that performs web research using different search methods based on model provider.
 
-    Executes a web search using the native Google Search API tool in combination with Gemini 2.0 Flash.
+    Executes a web search using either Google Search API (for Gemini) or alternative search methods (for Qwen).
 
     Args:
         state: Current graph state containing the search query and research loop count
@@ -106,34 +184,75 @@ def web_research(state: WebSearchState, config: RunnableConfig) -> OverallState:
     """
     # Configure
     configurable = Configuration.from_runnable_config(config)
-    formatted_prompt = web_searcher_instructions.format(
-        current_date=get_current_date(),
-        research_topic=state["search_query"],
-    )
+    
+    if configurable.model_provider.lower() == "gemini":
+        # 检查是否是简单问候的查询
+        if "如何友好地回应" in state["search_query"] and "这样的问候" in state["search_query"]:
+            # 对于简单问候，直接返回友好回应
+            return {
+                "sources_gathered": [],
+                "search_query": [state["search_query"]],
+                "web_research_result": ["你好！我是一个AI研究助手，很高兴见到你！我可以帮你研究各种问题，比如最新的科技趋势、历史事件、学术资料等。请告诉我你想了解什么，我会为你进行深入的研究和分析。"],
+            }
+        
+        # 使用原有的Google Search API方法
+        if genai_client is None:
+            raise ValueError("使用 Gemini 模型需要设置 GEMINI_API_KEY")
+            
+        formatted_prompt = web_searcher_instructions.format(
+            current_date=get_current_date(),
+            research_topic=state["search_query"],
+        )
 
-    # Uses the google genai client as the langchain client doesn't return grounding metadata
-    response = genai_client.models.generate_content(
-        model=configurable.query_generator_model,
-        contents=formatted_prompt,
-        config={
-            "tools": [{"google_search": {}}],
-            "temperature": 0,
-        },
-    )
-    # resolve the urls to short urls for saving tokens and time
-    resolved_urls = resolve_urls(
-        response.candidates[0].grounding_metadata.grounding_chunks, state["id"]
-    )
-    # Gets the citations and adds them to the generated text
-    citations = get_citations(response, resolved_urls)
-    modified_text = insert_citation_markers(response.text, citations)
-    sources_gathered = [item for citation in citations for item in citation["segments"]]
-
-    return {
-        "sources_gathered": sources_gathered,
-        "search_query": [state["search_query"]],
-        "web_research_result": [modified_text],
-    }
+        # Uses the google genai client as the langchain client doesn't return grounding metadata
+        response = genai_client.models.generate_content(
+            model=configurable.query_generator_model,
+            contents=formatted_prompt,
+            config={
+                "tools": [{"google_search": {}}],
+                "temperature": 0,
+            },
+        )
+        # resolve the urls to short urls for saving tokens and time
+        resolved_urls = resolve_urls(
+            response.candidates[0].grounding_metadata.grounding_chunks, state["id"]
+        )
+        # Gets the citations and adds them to the generated text
+        citations = get_citations(response, resolved_urls)
+        modified_text = insert_citation_markers(response.text, citations)
+        sources_gathered = [item for citation in citations for item in citation["segments"]]
+        
+        return {
+            "sources_gathered": sources_gathered,
+            "search_query": [state["search_query"]],
+            "web_research_result": [modified_text],
+        }
+    
+    elif configurable.model_provider.lower() == "qwen":
+        # 检查是否是简单问候的查询
+        if "如何友好地回应" in state["search_query"] and "这样的问候" in state["search_query"]:
+            # 对于简单问候，直接返回友好回应
+            return {
+                "sources_gathered": [],
+                "search_query": [state["search_query"]],
+                "web_research_result": ["你好！我是一个AI研究助手，很高兴见到你！我可以帮你研究各种问题，比如最新的科技趋势、历史事件、学术资料等。请告诉我你想了解什么，我会为你进行深入的研究和分析。"],
+            }
+        
+        # 使用通义千问的搜索方法
+        search_result = perform_web_search_with_qwen(
+            query=state["search_query"],
+            model_name=configurable.query_generator_model,
+            num_results=5
+        )
+        
+        return {
+            "sources_gathered": search_result["sources_gathered"],
+            "search_query": [state["search_query"]],
+            "web_research_result": [search_result["analysis"]],
+        }
+    
+    else:
+        raise ValueError(f"不支持的模型提供商: {configurable.model_provider}")
 
 
 def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
@@ -163,21 +282,84 @@ def reflection(state: OverallState, config: RunnableConfig) -> ReflectionState:
         summaries="\n\n---\n\n".join(state["web_research_result"]),
     )
     # init Reasoning Model
-    llm = ChatGoogleGenerativeAI(
-        model=reasoning_model,
+    llm = create_chat_model(
+        model_name=reasoning_model,
+        provider=configurable.model_provider,
         temperature=1.0,
         max_retries=2,
-        api_key=os.getenv("GEMINI_API_KEY"),
     )
-    result = llm.with_structured_output(Reflection).invoke(formatted_prompt)
+    
+    # 根据模型提供商使用不同的方法
+    if configurable.model_provider.lower() == "gemini":
+        # Gemini支持结构化输出
+        result = llm.with_structured_output(Reflection).invoke(formatted_prompt)
+        
+        return {
+            "is_sufficient": result.is_sufficient,
+            "knowledge_gap": result.knowledge_gap,
+            "follow_up_queries": result.follow_up_queries,
+            "research_loop_count": state["research_loop_count"],
+            "number_of_ran_queries": len(state["search_query"]),
+        }
+    
+    elif configurable.model_provider.lower() == "qwen":
+        # 通义千问使用JSON格式提示
+        json_prompt = formatted_prompt + """
 
-    return {
-        "is_sufficient": result.is_sufficient,
-        "knowledge_gap": result.knowledge_gap,
-        "follow_up_queries": result.follow_up_queries,
-        "research_loop_count": state["research_loop_count"],
-        "number_of_ran_queries": len(state["search_query"]),
-    }
+请以JSON格式返回结果，格式如下：
+{
+    "is_sufficient": true/false,
+    "knowledge_gap": "描述缺失的信息",
+    "follow_up_queries": ["后续查询1", "后续查询2"]
+}
+
+请确保返回有效的JSON格式。
+"""
+        
+        response = llm.invoke(json_prompt)
+        
+        # 解析JSON响应
+        import json
+        try:
+            content = response.content
+            start_idx = content.find('{')
+            end_idx = content.rfind('}') + 1
+            if start_idx != -1 and end_idx != 0:
+                json_str = content[start_idx:end_idx]
+                result_data = json.loads(json_str)
+                
+                return {
+                    "is_sufficient": result_data.get("is_sufficient", False),
+                    "knowledge_gap": result_data.get("knowledge_gap", "需要更多信息"),
+                    "follow_up_queries": result_data.get("follow_up_queries", []),
+                    "research_loop_count": state["research_loop_count"],
+                    "number_of_ran_queries": len(state["search_query"]),
+                }
+            else:
+                # 默认返回值
+                return {
+                    "is_sufficient": False,
+                    "knowledge_gap": "需要更多信息",
+                    "follow_up_queries": [get_research_topic(state["messages"]) + " 更多详情"],
+                    "research_loop_count": state["research_loop_count"],
+                    "number_of_ran_queries": len(state["search_query"]),
+                }
+                
+        except json.JSONDecodeError as e:
+            print(f"Reflection JSON解析失败: {e}")
+            print(f"原始响应: {response.content}")
+            
+            # 默认返回值
+            return {
+                "is_sufficient": False,
+                "knowledge_gap": "需要更多信息",
+                "follow_up_queries": [get_research_topic(state["messages"]) + " 更多详情"],
+                "research_loop_count": state["research_loop_count"],
+                "number_of_ran_queries": len(state["search_query"]),
+            }
+    
+    else:
+        raise ValueError(f"不支持的模型提供商: {configurable.model_provider}")
 
 
 def evaluate_research(
@@ -241,12 +423,12 @@ def finalize_answer(state: OverallState, config: RunnableConfig):
         summaries="\n---\n\n".join(state["web_research_result"]),
     )
 
-    # init Reasoning Model, default to Gemini 2.5 Flash
-    llm = ChatGoogleGenerativeAI(
-        model=reasoning_model,
+    # init Reasoning Model
+    llm = create_chat_model(
+        model_name=reasoning_model,
+        provider=configurable.model_provider,
         temperature=0,
         max_retries=2,
-        api_key=os.getenv("GEMINI_API_KEY"),
     )
     result = llm.invoke(formatted_prompt)
 

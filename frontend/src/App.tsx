@@ -103,10 +103,13 @@ export default function App() {
   }, [thread.messages, thread.isLoading, processedEventsTimeline]);
 
   const handleSubmit = useCallback(
-    (submittedInputValue: string, effort: string, model: string) => {
+    (submittedInputValue: string, effort: string, modelWithProvider: string) => {
       if (!submittedInputValue.trim()) return;
       setProcessedEventsTimeline([]);
       hasFinalizeEventOccurredRef.current = false;
+
+      // 解析provider和model
+      const [provider, model] = modelWithProvider.split(':');
 
       // convert effort to, initial_search_query_count and max_research_loops
       // low means max 1 loop and 1 query
@@ -142,6 +145,10 @@ export default function App() {
         initial_search_query_count: initial_search_query_count,
         max_research_loops: max_research_loops,
         reasoning_model: model,
+        model_provider: provider,
+        query_generator_model: model,
+        reflection_model: model,
+        answer_model: model,
       });
     },
     [thread]

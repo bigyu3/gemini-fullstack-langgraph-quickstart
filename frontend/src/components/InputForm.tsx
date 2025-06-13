@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { Button } from "@/components/ui/button";
-import { SquarePen, Brain, Send, StopCircle, Zap, Cpu } from "lucide-react";
+import { SquarePen, Brain, Send, StopCircle, Zap, Cpu, Bot } from "lucide-react";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Select,
@@ -27,12 +27,25 @@ export const InputForm: React.FC<InputFormProps> = ({
   const [internalInputValue, setInternalInputValue] = useState("");
   const [effort, setEffort] = useState("medium");
   const [model, setModel] = useState("gemini-2.5-flash-preview-04-17");
+  const [provider, setProvider] = useState("gemini");
 
   const handleInternalSubmit = (e?: React.FormEvent) => {
     if (e) e.preventDefault();
     if (!internalInputValue.trim()) return;
-    onSubmit(internalInputValue, effort, model);
+    // 将provider和model信息传递给后端
+    const modelWithProvider = `${provider}:${model}`;
+    onSubmit(internalInputValue, effort, modelWithProvider);
     setInternalInputValue("");
+  };
+
+  // 根据provider更新默认模型
+  const handleProviderChange = (newProvider: string) => {
+    setProvider(newProvider);
+    if (newProvider === "gemini") {
+      setModel("gemini-2.5-flash-preview-04-17");
+    } else if (newProvider === "qwen") {
+      setModel("qwen-plus");
+    }
   };
 
   const handleInternalKeyDown = (
@@ -94,8 +107,8 @@ export const InputForm: React.FC<InputFormProps> = ({
         </div>
       </div>
       <div className="flex items-center justify-between">
-        <div className="flex flex-row gap-2">
-          <div className="flex flex-row gap-2 bg-neutral-700 border-neutral-600 text-neutral-300 focus:ring-neutral-500 rounded-xl rounded-t-sm pl-2  max-w-[100%] sm:max-w-[90%]">
+        <div className="flex flex-row gap-2 flex-wrap">
+          <div className="flex flex-row gap-2 bg-neutral-700 border-neutral-600 text-neutral-300 focus:ring-neutral-500 rounded-xl rounded-t-sm pl-2">
             <div className="flex flex-row items-center text-sm">
               <Brain className="h-4 w-4 mr-2" />
               Effort
@@ -126,7 +139,38 @@ export const InputForm: React.FC<InputFormProps> = ({
               </SelectContent>
             </Select>
           </div>
-          <div className="flex flex-row gap-2 bg-neutral-700 border-neutral-600 text-neutral-300 focus:ring-neutral-500 rounded-xl rounded-t-sm pl-2  max-w-[100%] sm:max-w-[90%]">
+          
+          <div className="flex flex-row gap-2 bg-neutral-700 border-neutral-600 text-neutral-300 focus:ring-neutral-500 rounded-xl rounded-t-sm pl-2">
+            <div className="flex flex-row items-center text-sm">
+              <Bot className="h-4 w-4 mr-2" />
+              Provider
+            </div>
+            <Select value={provider} onValueChange={handleProviderChange}>
+              <SelectTrigger className="w-[120px] bg-transparent border-none cursor-pointer">
+                <SelectValue placeholder="Provider" />
+              </SelectTrigger>
+              <SelectContent className="bg-neutral-700 border-neutral-600 text-neutral-300 cursor-pointer">
+                <SelectItem
+                  value="gemini"
+                  className="hover:bg-neutral-600 focus:bg-neutral-600 cursor-pointer"
+                >
+                  <div className="flex items-center">
+                    <Zap className="h-4 w-4 mr-2 text-blue-400" /> Gemini
+                  </div>
+                </SelectItem>
+                <SelectItem
+                  value="qwen"
+                  className="hover:bg-neutral-600 focus:bg-neutral-600 cursor-pointer"
+                >
+                  <div className="flex items-center">
+                    <Bot className="h-4 w-4 mr-2 text-red-400" /> 通义千问
+                  </div>
+                </SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="flex flex-row gap-2 bg-neutral-700 border-neutral-600 text-neutral-300 focus:ring-neutral-500 rounded-xl rounded-t-sm pl-2">
             <div className="flex flex-row items-center text-sm ml-2">
               <Cpu className="h-4 w-4 mr-2" />
               Model
@@ -136,30 +180,69 @@ export const InputForm: React.FC<InputFormProps> = ({
                 <SelectValue placeholder="Model" />
               </SelectTrigger>
               <SelectContent className="bg-neutral-700 border-neutral-600 text-neutral-300 cursor-pointer">
-                <SelectItem
-                  value="gemini-2.0-flash"
-                  className="hover:bg-neutral-600 focus:bg-neutral-600 cursor-pointer"
-                >
-                  <div className="flex items-center">
-                    <Zap className="h-4 w-4 mr-2 text-yellow-400" /> 2.0 Flash
-                  </div>
-                </SelectItem>
-                <SelectItem
-                  value="gemini-2.5-flash-preview-04-17"
-                  className="hover:bg-neutral-600 focus:bg-neutral-600 cursor-pointer"
-                >
-                  <div className="flex items-center">
-                    <Zap className="h-4 w-4 mr-2 text-orange-400" /> 2.5 Flash
-                  </div>
-                </SelectItem>
-                <SelectItem
-                  value="gemini-2.5-pro-preview-05-06"
-                  className="hover:bg-neutral-600 focus:bg-neutral-600 cursor-pointer"
-                >
-                  <div className="flex items-center">
-                    <Cpu className="h-4 w-4 mr-2 text-purple-400" /> 2.5 Pro
-                  </div>
-                </SelectItem>
+                {provider === "gemini" ? (
+                  <>
+                    <SelectItem
+                      value="gemini-2.0-flash"
+                      className="hover:bg-neutral-600 focus:bg-neutral-600 cursor-pointer"
+                    >
+                      <div className="flex items-center">
+                        <Zap className="h-4 w-4 mr-2 text-yellow-400" /> 2.0 Flash
+                      </div>
+                    </SelectItem>
+                    <SelectItem
+                      value="gemini-2.5-flash-preview-04-17"
+                      className="hover:bg-neutral-600 focus:bg-neutral-600 cursor-pointer"
+                    >
+                      <div className="flex items-center">
+                        <Zap className="h-4 w-4 mr-2 text-orange-400" /> 2.5 Flash
+                      </div>
+                    </SelectItem>
+                    <SelectItem
+                      value="gemini-2.5-pro-preview-05-06"
+                      className="hover:bg-neutral-600 focus:bg-neutral-600 cursor-pointer"
+                    >
+                      <div className="flex items-center">
+                        <Cpu className="h-4 w-4 mr-2 text-purple-400" /> 2.5 Pro
+                      </div>
+                    </SelectItem>
+                  </>
+                ) : (
+                  <>
+                    <SelectItem
+                      value="qwen-turbo"
+                      className="hover:bg-neutral-600 focus:bg-neutral-600 cursor-pointer"
+                    >
+                      <div className="flex items-center">
+                        <Zap className="h-4 w-4 mr-2 text-green-400" /> Turbo
+                      </div>
+                    </SelectItem>
+                    <SelectItem
+                      value="qwen-plus"
+                      className="hover:bg-neutral-600 focus:bg-neutral-600 cursor-pointer"
+                    >
+                      <div className="flex items-center">
+                        <Cpu className="h-4 w-4 mr-2 text-blue-400" /> Plus
+                      </div>
+                    </SelectItem>
+                    <SelectItem
+                      value="qwen-max"
+                      className="hover:bg-neutral-600 focus:bg-neutral-600 cursor-pointer"
+                    >
+                      <div className="flex items-center">
+                        <Cpu className="h-4 w-4 mr-2 text-purple-400" /> Max
+                      </div>
+                    </SelectItem>
+                    <SelectItem
+                      value="qwen-long"
+                      className="hover:bg-neutral-600 focus:bg-neutral-600 cursor-pointer"
+                    >
+                      <div className="flex items-center">
+                        <Brain className="h-4 w-4 mr-2 text-indigo-400" /> Long
+                      </div>
+                    </SelectItem>
+                  </>
+                )}
               </SelectContent>
             </Select>
           </div>

@@ -8,6 +8,13 @@ from langchain_core.runnables import RunnableConfig
 class Configuration(BaseModel):
     """The configuration for the agent."""
 
+    model_provider: str = Field(
+        default="gemini",
+        metadata={
+            "description": "The model provider to use: 'gemini' or 'qwen'"
+        },
+    )
+
     query_generator_model: str = Field(
         default="gemini-2.0-flash",
         metadata={
@@ -49,10 +56,14 @@ class Configuration(BaseModel):
         )
 
         # Get raw values from environment or config
-        raw_values: dict[str, Any] = {
-            name: os.environ.get(name.upper(), configurable.get(name))
-            for name in cls.model_fields.keys()
-        }
+        raw_values: dict[str, Any] = {}
+        for name in cls.model_fields.keys():
+            # 首先检查configurable中是否有值（来自前端）
+            if name in configurable and configurable[name] is not None:
+                raw_values[name] = configurable[name]
+            # 然后检查环境变量
+            elif os.environ.get(name.upper()) is not None:
+                raw_values[name] = os.environ.get(name.upper())
 
         # Filter out None values
         values = {k: v for k, v in raw_values.items() if v is not None}

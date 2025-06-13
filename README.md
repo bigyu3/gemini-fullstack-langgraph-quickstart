@@ -29,10 +29,13 @@ Follow these steps to get the application running locally for development and te
 
 -   Node.js and npm (or yarn/pnpm)
 -   Python 3.8+
--   **`GEMINI_API_KEY`**: The backend agent requires a Google Gemini API key.
+-   **API Keys**: The backend agent supports both Google Gemini and Alibaba Qwen models.
     1.  Navigate to the `backend/` directory.
-    2.  Create a file named `.env` by copying the `backend/.env.example` file.
-    3.  Open the `.env` file and add your Gemini API key: `GEMINI_API_KEY="YOUR_ACTUAL_API_KEY"`
+    2.  Create a file named `.env`.
+    3.  Add your API keys and model provider configuration:
+        - For Gemini: `GEMINI_API_KEY="YOUR_GEMINI_API_KEY"`
+        - For Qwen: `DASHSCOPE_API_KEY="YOUR_DASHSCOPE_API_KEY"`
+        - Set model provider: `MODEL_PROVIDER="gemini"` or `MODEL_PROVIDER="qwen"`
 
 **2. Install Dependencies:**
 
@@ -41,6 +44,16 @@ Follow these steps to get the application running locally for development and te
 ```bash
 cd backend
 pip install .
+
+cd backend
+
+# uv会自动管理虚拟环境
+uv sync
+
+# 使用uv运行
+uv run langgraph dev
+
+
 ```
 
 **Frontend:**
@@ -102,6 +115,7 @@ Open your browser and navigate to `http://localhost:8123/app/` to see the applic
 - [Shadcn UI](https://ui.shadcn.com/) - For components.
 - [LangGraph](https://github.com/langchain-ai/langgraph) - For building the backend research agent.
 - [Google Gemini](https://ai.google.dev/models/gemini) - LLM for query generation, reflection, and answer synthesis.
+- [Alibaba Qwen](https://dashscope.aliyun.com/) - Alternative LLM support for Chinese users and scenarios.
 
 ## License
 
